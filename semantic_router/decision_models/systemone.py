@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
+from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, ClassVar, Sequence
 from urllib.parse import urlsplit
 
@@ -30,6 +33,16 @@ def _origin(url: str) -> str:
         port = None
     host = (parts.hostname or "").lower()
     return f"{scheme}://{host}" + (f":{port}" if port else "")
+
+
+@lru_cache(maxsize=1)
+def _nace_client() -> str | None:
+    """`semantic-router/<version>`, or None for a checkout that was never installed."""
+    try:
+        v = version("semantic-router")
+    except PackageNotFoundError:
+        return None
+    return f"semantic-router/{re.sub(r'[^A-Za-z0-9 ._@+-]', '-', v)}"[:64]
 
 
 class SystemOneDecisionModel(DecisionModel):
@@ -93,6 +106,10 @@ class SystemOneDecisionModel(DecisionModel):
             raise ValueError(f"pass api_key or set {self.api_key_env}")
         self._session = self.session
 
+    def _extra_headers(self) -> dict[str, str]:
+        """headers sent on every request besides Authorization; none by default."""
+        return {}
+
     @property
     def url(self) -> str:
         return f"{self.base_url.rstrip('/')}/v1/systemone"
@@ -115,6 +132,7 @@ class SystemOneDecisionModel(DecisionModel):
         self._loop = loop
         body = {"state": state, "model": self.name, "questions": questions}
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        headers.update(self._extra_headers())
         for attempt in range(self.retries + 1):
             try:
                 async with self._session.post(
@@ -216,3 +234,8 @@ class NaceDecisionModel(SystemOneDecisionModel):
     api_key_env: ClassVar[str | None] = "NACE_API_KEY"
     env_key_origin: ClassVar[str | None] = "https://console.nace.ai"
     requires_key: ClassVar[bool] = True
+
+    def _extra_headers(self) -> dict[str, str]:
+        # names this integration and its version for nace.ai's usage attribution
+        client = _nace_client()
+        return {"X-Nace-Client": client} if client else {}

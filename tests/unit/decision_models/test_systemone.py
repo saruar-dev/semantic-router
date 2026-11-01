@@ -1,5 +1,7 @@
 import asyncio
 import json
+import re
+from importlib.metadata import version
 
 import pytest
 
@@ -165,7 +167,30 @@ def test_nace_request_carries_the_model_the_key_and_text_only():
     assert r("why was i charged twice").name == "billing"
     assert s.calls[0]["model"] == "drex-max"
     assert set(s.calls[0]) == {"state", "model", "questions"}  # no images array
-    assert s.headers[0] == {"Authorization": "Bearer k"}
+    assert s.headers[0] == {
+        "Authorization": "Bearer k",
+        "X-Nace-Client": f"semantic-router/{version('semantic-router')}",
+    }
+
+
+def test_nace_client_header_has_the_documented_format():
+    s = FakeSession(answer({"billing": 0.9, "technical": 0.1}))
+    DecisionRouter(model=drex(s), routes=ROUTES)("why was i charged twice")
+    header = s.headers[0]["X-Nace-Client"]
+    assert re.fullmatch(r"semantic-router/[A-Za-z0-9 ._@+-]+", header)
+    assert len(header) <= 64
+
+
+def test_other_systemone_models_do_not_send_the_nace_header():
+    for model in (
+        jev,
+        lambda s: SystemOneDecisionModel(
+            name="m", base_url="https://x.test", session=s
+        ),
+    ):
+        s = FakeSession(answer({"billing": 0.9, "technical": 0.1}))
+        DecisionRouter(model=model(s), routes=ROUTES)("why was i charged twice")
+        assert "X-Nace-Client" not in s.headers[0]
 
 
 def test_nace_reads_its_key_from_the_environment(monkeypatch):
@@ -210,7 +235,10 @@ def test_nace_explicit_key_with_a_custom_host_is_sent_there(monkeypatch):
     s = FakeSession(answer({"billing": 0.9, "technical": 0.1}))
     m = NaceDecisionModel(base_url="https://proxy.test", api_key="mine", session=s)
     assert DecisionRouter(model=m, routes=ROUTES)("refund").name == "billing"
-    assert s.headers[0] == {"Authorization": "Bearer mine"}
+    assert s.headers[0] == {
+        "Authorization": "Bearer mine",
+        "X-Nace-Client": f"semantic-router/{version('semantic-router')}",
+    }
     assert m.url == "https://proxy.test/v1/systemone"
 
 
@@ -233,7 +261,10 @@ def test_nace_explicit_key_survives_a_base_url_change(monkeypatch):
     m = NaceDecisionModel(api_key="mine", session=s)
     m.base_url = "https://proxy.test"
     assert DecisionRouter(model=m, routes=ROUTES)("refund").name == "billing"
-    assert s.headers[0] == {"Authorization": "Bearer mine"}
+    assert s.headers[0] == {
+        "Authorization": "Bearer mine",
+        "X-Nace-Client": f"semantic-router/{version('semantic-router')}",
+    }
 
 
 # --- against a real local http server, so session reuse across sync calls is exercised ---
